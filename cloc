@@ -808,6 +808,7 @@ my (
     $opt_no_recurse           ,
     $opt_only_count_files     ,
     $opt_fmt                  ,
+    $opt_including_archives   ,
    );
 
 my $getopt_success = GetOptions(             # {{{1
@@ -913,6 +914,7 @@ my $getopt_success = GetOptions(             # {{{1
    "no_recurse|no-recurse"                   => \$opt_no_recurse          ,
    "only_count_files|only-count-files"       => \$opt_only_count_files    ,
    "fmt=i"                                   => \$opt_fmt                 ,
+   "including_archives|including-archives"   => \$opt_including_archives  ,
   );
 # 1}}}
 $config_file = $opt_config_file if defined $opt_config_file;
@@ -1007,6 +1009,7 @@ load_from_config_file($config_file,          # {{{2
                                                 \$opt_file_encoding       ,
                                                 \$opt_docstring_as_code   ,
                                                 \$opt_stat                ,
+                                                \$opt_including_archives  ,
 );  # 2}}} Not pretty.  Not at all.
 if ($opt_version) {
     printf "$VERSION\n";
@@ -1031,6 +1034,8 @@ my $CLOC_XSL = "cloc.xsl"; # created with --xsl
    $CLOC_XSL = "cloc-diff.xsl" if $opt_diff;
 die "\n" unless $getopt_success;
 print $usage and exit if $opt_help;
+
+my %Extract_dir_map  = ();
 my %Exclude_Language = ();
    %Exclude_Language = map { $_ => 1 } split(/,/, $opt_exclude_lang)
         if $opt_exclude_lang;
@@ -1621,10 +1626,10 @@ if ($opt_extract_with) {
         my $bin_file_full_path = "";
         if (File::Spec->file_name_is_absolute( $bin_file )) {
             $bin_file_full_path = $bin_file;
-#print "bin_file_full_path (was ful) = [$bin_file_full_path]\n";
+        #print "bin_file_full_path (was ful) = [$bin_file_full_path]\n";
         } else {
             $bin_file_full_path = File::Spec->catfile( $cwd, $bin_file );
-#print "bin_file_full_path (was rel) = [$bin_file_full_path]\n";
+        #print "bin_file_full_path (was rel) = [$bin_file_full_path]\n";
         }
         my     $extract_cmd = uncompress_archive_cmd($bin_file_full_path);
         print  $extract_cmd, "\n" if $opt_v;
@@ -1690,7 +1695,8 @@ if ($opt_extract_with) {
         } else {
             $full_path = File::Spec->catfile( $cwd, $Arg );
         }
-#print "full_path = [$full_path]\n";
+        #print "full_path = [$full_path]\n";
+        # get extract command for this file if it's a archive, else empty string
         my $extract_cmd = uncompress_archive_cmd($full_path);
         if ($extract_cmd) {
             my $extract_dir = undef;
@@ -1788,6 +1794,7 @@ if ($opt_diff_list_file) {
     }
     @ARGV = (1, 2); # place holders
 }
+
 for (my $i = 0; $i < scalar @ARGV; $i++) {
     if ($opt_diff_list_file) {
         push @fh, make_file_list($files_for_set[$i], $i+1,
@@ -1867,6 +1874,7 @@ foreach my $FH (@fh) {  # loop over each pair of file sets
 # 1}}}
 # Step 6:  Count code, comments, blank lines.  {{{1
 #
+
 my %Results_by_Language = ();
 my %Results_by_File     = ();
 my %Delta_by_Language   = ();
@@ -1996,6 +2004,43 @@ if ( $max_processes == 0) {
     # Wait for processes to finish
     $pm->wait_all_children();
 }
+
+# mapping all tmp path to actual archive file path in Delta_by_File
+no strict;
+if ($opt_including_archives) {
+    my %new_result = ();
+    my %left_result = %Delta_by_File;
+    while (my ($tmp_path, $archive_path) = each (%Extract_dir_map)) {
+        my %nochange_result = ();
+        while (my ($file_path, $result) = each (%left_result)) {
+            if ($file_path =~ /^$tmp_path/) {
+                $file_path =~ s/^$tmp_path/$archive_path/;
+                $new_result{$file_path} = $result;
+                next;
+            }
+            $nochange_result{$file_path} = $result;
+        }
+        %left_result = %nochange_result;
+    }
+    %Delta_by_File = ( %new_result, %left_result );
+
+    %new_result = ();
+    %left_result = %Delta_by_File;
+    while (my ($tmp_path, $__) = each (%TEMP_DIR)) {
+        my %nochange_result = ();
+        while (my ($file_path, $result) = each (%left_result)) {
+            if ($file_path =~ /^$tmp_path/) {
+                $file_path =~ s/^$tmp_path/$cwd/;
+                $new_result{$file_path} = $result;
+                next;
+            }
+            $nochange_result{$file_path} = $result;
+        }
+        %left_result = %nochange_result;
+    }
+    %Delta_by_File = ( %new_result, %left_result );
+}
+use strict;
 
 # Write alignment data, if needed
 if ($opt_diff_alignment) {
@@ -2165,6 +2210,27 @@ if ( $max_processes == 0) {
     # Wait for processes to finish
     $pm->wait_all_children();
 }
+
+# mapping all tmp path to actual archive file path
+no strict;
+if ($opt_including_archives) {
+    my %new_result = ();
+    my %left_result = %Results_by_File;
+    while (my ($tmp_path, $archive_path) = each (%Extract_dir_map)) {
+        my %nochange_result = ();
+        while (my ($file_path, $result) = each (%left_result)) {
+            if ($file_path =~ /^$tmp_path/) {
+                $file_path =~ s/^$tmp_path/$archive_path/;
+                $new_result{$file_path} = $result;
+                next;
+            }
+            $nochange_result{$file_path} = $result;
+        }
+        %left_result = %nochange_result;
+    }
+    %Results_by_File = ( %new_result, %left_result );
+}
+use strict;
 
 my $separator = defined $opt_csv_delimiter ? $opt_csv_delimiter : ": ";
 my @ignored_reasons = map { "${_}${separator} $Ignored{$_}" } sort keys %Ignored;
@@ -5544,6 +5610,7 @@ sub lower_on_Windows {                       # {{{1
     return $lower;
 }
 # }}}
+
 sub make_file_list {                         # {{{1
     my ($ra_arg_list,  # in   file and/or directory names to examine
         $iteration  ,  # in   0 if only called once, 1 or 2 if twice for diff
@@ -5630,10 +5697,11 @@ sub make_file_list {                         # {{{1
         }
         push @new_file_list, $File unless $ignore_this_file;
     }
+    # add files in @dir_list to @file_list
     @file_list = @new_file_list;
     foreach my $dir (@dir_list) {
         my $D = lower_on_Windows($dir);
-#print "make_file_list dir=$dir  Exclude_Dir{$dir}=$Exclude_Dir{$dir}\n";
+        #print "make_file_list dir=$dir  Exclude_Dir{$dir}=$Exclude_Dir{$dir}\n";
         # populates global variable @file_list
         if ($Exclude_Dir{$dir}) {
             $Ignored{$D} = "--exclude-dir=$Exclude_Dir{$dir}";
@@ -5657,6 +5725,44 @@ sub make_file_list {                         # {{{1
             find({wanted     => \&files            ,
                   preprocess => \&find_preprocessor,
                   follow     =>  $opt_follow_links }, $dir);
+        }
+    }
+
+    # add files in archives
+     if ($opt_including_archives) {
+        my @file_list_backup = @file_list;
+        my @file_list_new = ();
+        # find archives and extract them to a temporary directory
+        foreach my $filename (@file_list_backup) {
+            @file_list = ();
+            if (!File::Spec->file_name_is_absolute($filename)) {
+                $filename = $cwd . '/' . $filename;
+            }
+            my $extract_cmd = uncompress_archive_cmd($filename);
+            if (!$extract_cmd) {
+                print "Skipping $filename (not archive or unsupported archive format)\n" if $opt_v;
+                push @file_list_new, $filename;
+                next;
+            }
+            my $extract_dir = tempdir( CLEANUP => 1 );  # 1 = delete on exit
+            print "$cwd: Extracting $filename to $extract_dir\n" if $opt_v;
+            print "cmd: $extract_cmd\n" if $opt_v;
+            no strict;
+            $Extract_dir_map{$extract_dir} = $filename;
+            use strict;
+            chdir $extract_dir;
+            system $extract_cmd;
+            chdir $cwd;
+            # find all files in the extracted directory
+            find({wanted     => \&files            ,
+                  preprocess => \&find_preprocessor,
+                  follow     =>  $opt_follow_links }, $extract_dir);
+            @file_list_new = (@file_list_new, @file_list);
+            # @file_list_new = map { s/$extract_dir/$filename/g; $_ } @file_list;
+        }
+        @file_list = @file_list_new;
+        foreach my $filename (@file_list) {
+            print "Adding $filename to file list\n" if $opt_v > 2;
         }
     }
     if ($opt_follow_links) {
@@ -5721,6 +5827,7 @@ sub make_file_list {                         # {{{1
             next;
         } elsif ($language eq "(unknown)") {
             # entry should already be in %{$rh_ignored}
+            # compressed files will be ignored;
             next;
         }
         printf $fh "%d%s%s%s%s\n", $size_in_bytes, $separator,
